@@ -12,7 +12,7 @@ Example config (`profiles.json`):
 [
   {
     "Name": "Default (4K)",
-    "DeviceName": "\\\\.\\DISPLAY1",
+    "MonitorId": "MONITOR\\XXXXXXX",
     "Width": 3840,
     "Height": 2160,
     "RefreshRate": 120,
@@ -20,7 +20,7 @@ Example config (`profiles.json`):
   },
   {
     "Name": "Gaming (2K)",
-    "DeviceName": "\\\\.\\DISPLAY1",
+    "MonitorId": "MONITOR\\XXXXXXX",
     "Width": 2560,
     "Height": 1440,
     "RefreshRate": 240,

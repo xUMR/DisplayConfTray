@@ -1,4 +1,5 @@
-﻿using System.Runtime.InteropServices;
+﻿using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Win32;
 
@@ -84,6 +85,7 @@ public class DisplayConfTrayContext : ApplicationContext
         }
 
         _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add("Open Directory", null, (_, _) => OpenDirectory());
         _menu.Items.Add("Copy Default Config", null, (_, _) => CopyDefaultConfig());
         _menu.Items.Add("Reload", null, (_, _) => LoadProfiles());
         _menu.Items.Add(new ToolStripSeparator());
@@ -112,17 +114,27 @@ public class DisplayConfTrayContext : ApplicationContext
         LoadProfiles();
     }
 
+    private void OpenDirectory()
+    {
+        var targetPath = File.Exists(_configPath)
+            ? $"/select,\"{_configPath}\""
+            : Application.ExecutablePath;
+
+        Process.Start("explorer.exe", targetPath);
+    }
+
     private void CopyDefaultConfig()
     {
         var json = GetDisplayConfig();
 
         Clipboard.SetText(json);
-        ShowBalloonTip("Multi-monitor config copied to clipboard!");
+        ShowBalloonTip("Config copied to clipboard!");
     }
 
     private string GetDisplayConfig()
     {
         var currentProfiles = new List<DisplayProfile>();
+        var monitors = DisplayManager.GetMonitors();
 
         // Screen.AllScreens detects every active monitor connected to the GPU
         foreach (var screen in Screen.AllScreens)
@@ -135,10 +147,17 @@ public class DisplayConfTrayContext : ApplicationContext
                 // We also need to grab the DPI/Scale for this specific monitor
                 int currentScale = GetCurrentScaleForScreen(screen);
 
+                var monitor = monitors.FirstOrDefault(m => m.DeviceName == screen.DeviceName);
+                if (monitor == default)
+                {
+                    Console.WriteLine($"Monitor not found: {screen.DeviceName}");
+                    continue;
+                }
+
                 currentProfiles.Add(new DisplayProfile
                 {
                     Name = $"Profile_{screen.DeviceName.Replace(".", "").Replace("\\", "")}",
-                    DeviceName = screen.DeviceName, // This is the unique ID for your JSON
+                    MonitorId = monitor.MonitorId,
                     Width = dm.dmPelsWidth,
                     Height = dm.dmPelsHeight,
                     RefreshRate = dm.dmDisplayFrequency,
