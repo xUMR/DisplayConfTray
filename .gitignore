@@ -1,0 +1,47 @@
+﻿# .NET build artifacts
+bin/
+obj/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# NuGet
+*.nuget.props
+*.nuget.targets
+project.assets.json
+project.nuget.cache
+project.packagespec.json
+
+# Rider
+.idea/
+*.sln.DotSettings.user
+
+# Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+
+# Visual Studio cache/options
+.vs/
+
+# Rider project restore info
+*.csproj.nuget.dgspec.json
+rider.project.restore.info
+rider.project.model.nuget.info
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Application settings (if contains sensitive data)
+settings.json
