@@ -145,20 +145,44 @@ internal static class DisplayManager
         public int HighPart;
     }
 
-    // placeholder
+    // placeholder – must be pure value types to allow FieldOffset overlap in DISPLAYCONFIG_MODE_INFO
+    [StructLayout(LayoutKind.Sequential, Size = 64)]
+    public struct DISPLAYCONFIG_SOURCE_MODE { }
+
+    [StructLayout(LayoutKind.Sequential, Size = 64)]
+    public struct DISPLAYCONFIG_DESKTOP_IMAGE_INFO { }
+
     [StructLayout(LayoutKind.Sequential)]
-    public struct DISPLAYCONFIG_SOURCE_MODE
+    public struct DISPLAYCONFIG_DEVICE_INFO_HEADER
     {
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 64)]
-        public byte[] dummy;
+        public uint type;
+        public uint size;
+        public LUID adapterId;
+        public uint id;
     }
 
-    // placeholder
-    [StructLayout(LayoutKind.Sequential)]
-    public struct DISPLAYCONFIG_DESKTOP_IMAGE_INFO
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct DISPLAYCONFIG_SOURCE_DEVICE_NAME
     {
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 64)]
-        public byte[] dummy;
+        public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string viewGdiDeviceName;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct DISPLAYCONFIG_GET_DPI_SCALE
+    {
+        public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+        public int minScaleSteps;
+        public int currentScaleSteps;
+        public int maxScaleSteps;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct DISPLAYCONFIG_SET_DPI_SCALE
+    {
+        public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+        public int scaleSteps;
     }
 
     #endregion
@@ -201,6 +225,18 @@ internal static class DisplayManager
         [Out] DISPLAYCONFIG_MODE_INFO[] modeInfoArray,
         IntPtr topologyId);
 
+    [DllImport("user32.dll")]
+    public static extern int DisplayConfigGetDeviceInfo(
+        ref DISPLAYCONFIG_SOURCE_DEVICE_NAME deviceName);
+
+    [DllImport("user32.dll")]
+    public static extern int DisplayConfigGetDeviceInfo(
+        ref DISPLAYCONFIG_GET_DPI_SCALE getDpiScale);
+
+    [DllImport("user32.dll")]
+    public static extern int DisplayConfigSetDeviceInfo(
+        ref DISPLAYCONFIG_SET_DPI_SCALE setDpiScale);
+
     #endregion
 
     #region Flags
@@ -215,42 +251,15 @@ internal static class DisplayManager
     public const uint QDC_ALL_PATHS = 0x00000001;
     public const uint QDC_ONLY_ACTIVE_PATHS = 0x00000002;
 
+    // DPI scale device info types (undocumented, stable since Windows 10 1803)
+    public const uint DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME = 0x00000001;
+    public const uint DISPLAYCONFIG_DEVICE_INFO_GET_DPI_SCALE = 0xFFFFFFFD; // -3
+    public const uint DISPLAYCONFIG_DEVICE_INFO_SET_DPI_SCALE = 0xFFFFFFFC; // -4
+
     #endregion
 
-    private static void LogModes(string deviceName)
-    {
-        DEVMODE tempMode = new DEVMODE();
-        for (int i = 0; EnumDisplaySettings(deviceName, i, ref tempMode); i++)
-        {
-            Console.WriteLine($"Found mode: {tempMode.dmPelsWidth}x{tempMode.dmPelsHeight} @ {tempMode.dmDisplayFrequency}Hz & {tempMode.dmLogPixels}");
-        }
-    }
-
-    /// <summary>
-    /// Resolves the current \\.\DISPLAYx name for a monitor identified by its hardware ID.
-    /// </summary>
-    public static string? ResolveDeviceName(string monitorId)
-    {
-        var adapter = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
-
-        for (uint i = 0; EnumDisplayDevices(null, i, ref adapter, 0); i++)
-        {
-            var monitor = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
-
-            for (uint j = 0; EnumDisplayDevices(adapter.DeviceName, j, ref monitor, 0); j++)
-            {
-                // monitor.DeviceID looks like:
-                // MONITOR\DELA1A1\{guid}
-                // We match on the stable prefix (e.g. "MONITOR\DELA1A1")
-                if (monitor.DeviceID.Contains(monitorId, StringComparison.OrdinalIgnoreCase))
-                {
-                    return adapter.DeviceName; // e.g. \\.\DISPLAY1
-                }
-            }
-        }
-
-        return null;
-    }
+    private static readonly int[] ScalePercentages =
+        [100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500];
 
     /// <summary>
     /// Lists all connected monitors with their current DeviceName and stable hardware ID.
@@ -299,12 +308,90 @@ internal static class DisplayManager
             dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
 
             var result = ChangeDisplaySettingsEx(deviceName, ref dm, IntPtr.Zero, CDS_UPDATEREGISTRY, IntPtr.Zero);
-            // todo scaling
-
             if (result != 0) // DISP_CHANGE_SUCCESSFUL is 0
             {
                 MessageBox.Show($"Failed to change settings. Error code: {result}");
+                return;
             }
+
+            SetScale(deviceName, p.Scale);
+        }
+    }
+
+    /// <summary>
+    /// Resolves the current \\.\DISPLAYx name for a monitor identified by its hardware ID.
+    /// </summary>
+    public static string? ResolveDeviceName(string monitorId)
+    {
+        var adapter = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
+
+        for (uint i = 0; EnumDisplayDevices(null, i, ref adapter, 0); i++)
+        {
+            var monitor = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
+
+            for (uint j = 0; EnumDisplayDevices(adapter.DeviceName, j, ref monitor, 0); j++)
+            {
+                // monitor.DeviceID looks like:
+                // MONITOR\XXXA1A1\{guid}
+                // We match on the stable prefix (e.g. "MONITOR\XXXA1A1")
+                if (monitor.DeviceID.Contains(monitorId, StringComparison.OrdinalIgnoreCase))
+                {
+                    return adapter.DeviceName; // e.g. \\.\DISPLAY1
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static void SetScale(string deviceName, int scalePercent)
+    {
+        var targetIndex = Array.IndexOf(ScalePercentages, scalePercent);
+        if (targetIndex < 0) return;
+
+        GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, out uint pathCount, out uint modeCount);
+        var paths = new DISPLAYCONFIG_PATH_INFO[pathCount];
+        var modes = new DISPLAYCONFIG_MODE_INFO[modeCount];
+        QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, ref pathCount, paths, ref modeCount, modes, IntPtr.Zero);
+
+        foreach (var path in paths)
+        {
+            var sourceName = new DISPLAYCONFIG_SOURCE_DEVICE_NAME();
+            sourceName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            sourceName.header.size = (uint)Marshal.SizeOf<DISPLAYCONFIG_SOURCE_DEVICE_NAME>();
+            sourceName.header.adapterId = path.sourceInfo.adapterId;
+            sourceName.header.id = path.sourceInfo.id;
+
+            if (DisplayConfigGetDeviceInfo(ref sourceName) != 0) continue;
+            if (sourceName.viewGdiDeviceName != deviceName) continue;
+
+            // Get current DPI info to determine recommended scale
+            var getDpi = new DISPLAYCONFIG_GET_DPI_SCALE();
+            getDpi.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_DPI_SCALE;
+            getDpi.header.size = (uint)Marshal.SizeOf<DISPLAYCONFIG_GET_DPI_SCALE>();
+            getDpi.header.adapterId = path.sourceInfo.adapterId;
+            getDpi.header.id = path.sourceInfo.id;
+
+            if (DisplayConfigGetDeviceInfo(ref getDpi) != 0) return;
+
+            var recommendedIndex = Math.Abs(getDpi.minScaleSteps);
+            var relativeSteps = targetIndex - recommendedIndex;
+
+            // Clamp to the monitor's supported range
+            relativeSteps = Math.Clamp(relativeSteps, getDpi.minScaleSteps, getDpi.maxScaleSteps);
+
+            // Skip if already at the desired scale
+            if (getDpi.currentScaleSteps == relativeSteps) return;
+
+            var setDpi = new DISPLAYCONFIG_SET_DPI_SCALE();
+            setDpi.header.type = DISPLAYCONFIG_DEVICE_INFO_SET_DPI_SCALE;
+            setDpi.header.size = (uint)Marshal.SizeOf<DISPLAYCONFIG_SET_DPI_SCALE>();
+            setDpi.header.adapterId = path.sourceInfo.adapterId;
+            setDpi.header.id = path.sourceInfo.id;
+            setDpi.scaleSteps = relativeSteps;
+
+            DisplayConfigSetDeviceInfo(ref setDpi);
+            return;
         }
     }
 }
