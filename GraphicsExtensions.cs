@@ -13,4 +13,18 @@ public static class GraphicsExtensions
         path.CloseFigure();
         g.FillPath(brush, path);
     }
+
+    public static Bitmap CreateCircleImage(int size, Color color)
+    {
+        var bmp = new Bitmap(size, size);
+        using var g = Graphics.FromImage(bmp);
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        g.Clear(Color.Transparent);
+
+        using var brush = new SolidBrush(color);
+        var ringMargin = 4;
+        g.FillEllipse(brush, ringMargin, ringMargin, size - 2 * ringMargin, size - 2 * ringMargin);
+
+        return bmp;
+    }
 }

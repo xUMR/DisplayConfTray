@@ -483,4 +483,60 @@ internal static class DisplayManager
             return;
         }
     }
+
+    public static bool TryGetDisplayProfile(string monitorId, out DisplayProfile profile)
+    {
+        profile = new DisplayProfile { MonitorId = monitorId };
+        DEVMODE dm = new() { dmSize = (short)Marshal.SizeOf<DEVMODE>() };
+
+        var deviceName = ResolveDeviceName(monitorId);
+        if (deviceName == null) return false;
+        if (!EnumDisplaySettings(deviceName, ENUM_CURRENT_SETTINGS, ref dm)) return false;
+
+        profile.Width = dm.dmPelsWidth;
+        profile.Height = dm.dmPelsHeight;
+
+        // refresh rate & scale
+        var (paths, modes, pathIndex) = FindDisplayConfigPath(deviceName);
+        if (pathIndex < 0) return false;
+
+        // Find the target mode for this path
+        var targetModeIdx = paths[pathIndex].targetInfo.modeInfoIdx;
+        if (targetModeIdx >= modes.Length) return false;
+
+        // Modify the target mode's vSyncFreq to the exact refresh rate
+        var mode = modes[targetModeIdx];
+        if (mode.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_TARGET)
+        {
+            var vSyncFreq = mode.targetMode.targetVideoSignalInfo.vSyncFreq;
+            var refreshRate = (double)vSyncFreq.Numerator / vSyncFreq.Denominator;
+            profile.RefreshRate = Convert.ToInt32(refreshRate);
+        }
+        else
+        {
+            profile.RefreshRate = Constants.DEFAULT_REFRESH_RATE;
+            return false;
+        }
+
+        // scale
+        var getDpi = new DISPLAYCONFIG_GET_DPI_SCALE();
+        getDpi.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_DPI_SCALE;
+        getDpi.header.size = (uint)Marshal.SizeOf<DISPLAYCONFIG_GET_DPI_SCALE>();
+        getDpi.header.adapterId = paths[pathIndex].sourceInfo.adapterId;
+        getDpi.header.id = paths[pathIndex].sourceInfo.id;
+
+        if (DisplayConfigGetDeviceInfo(ref getDpi) != 0) return false;
+
+        var currentIndex = Math.Abs(getDpi.minScaleSteps) + getDpi.currentScaleSteps;
+        if (currentIndex >= 0 && currentIndex < ScalePercentages.Length)
+        {
+            profile.Scale = ScalePercentages[currentIndex];
+        }
+        else
+        {
+            profile.Scale = Constants.DEFAULT_SCALE;
+        }
+
+        return true;
+    }
 }

@@ -1,7 +1,5 @@
-﻿using System.Diagnostics;
-using System.Runtime.InteropServices;
+using System.Diagnostics;
 using System.Text.Json;
-using Microsoft.Win32;
 
 namespace DisplayConfTray;
 
@@ -34,11 +32,11 @@ public class DisplayConfTrayContext : ApplicationContext
             Visible = true
         };
 
-        LoadProfiles();
+        Initialize();
 
         if (isSilent)
         {
-            _ = LoadProfilesAsync(delay);
+            _ = InitializeAsync(delay);
         }
         else
         {
@@ -46,17 +44,21 @@ public class DisplayConfTrayContext : ApplicationContext
         }
     }
 
-    private async Task LoadProfilesAsync(int delay)
+    private async Task InitializeAsync(int delay)
     {
         await Task.Delay(delay * 1000);
 
-        LoadProfiles();
+        Initialize();
     }
 
-    private void LoadProfiles()
+    private void Initialize()
     {
-        _menu.Items.Clear();
+        var profiles = LoadProfilesFromFile();
+        InitializeMenuItems(profiles);
+    }
 
+    private List<DisplayProfile>? LoadProfilesFromFile()
+    {
         var profileConfigExists = File.Exists(_configPath);
         if (profileConfigExists)
         {
@@ -65,29 +67,47 @@ public class DisplayConfTrayContext : ApplicationContext
                 var json = File.ReadAllText(_configPath);
                 var profiles = JsonSerializer.Deserialize<List<DisplayProfile>>(json);
 
-                if (profiles != null)
-                {
-                    foreach (var p in profiles)
-                    {
-                        _menu.Items.Add(new ToolStripMenuItem(p.Name, null, (s, e) => DisplayManager.Apply(p)));
-                    }
-                }
+                return profiles;
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"Error loading profiles: {ex.Message}");
             }
         }
+
+        return null;
+    }
+
+    private void InitializeMenuItems(List<DisplayProfile>? profiles)
+    {
+        _menu.Items.Clear();
+
+        if (profiles != null && profiles.Count > 0)
+        {
+            var currentProfiles = GetCurrentProfiles();
+            var activeIcon = GraphicsExtensions.CreateCircleImage(16, _menu.ForeColor);
+
+            foreach (var profile in profiles)
+            {
+                var isActive = currentProfiles.Any(p => profile.Matches(p));
+                var item = new ToolStripMenuItem(profile.Name, isActive ? activeIcon : null, (_, _) =>
+                {
+                    DisplayManager.Apply(profile);
+                    InitializeMenuItems(profiles);
+                });
+                _menu.Items.Add(item);
+            }
+        }
         else
         {
-            _menu.Items.Add(new ToolStripMenuItem($"{Constants.CONFIG_FILE_NAME} not found!") { Enabled = false });
+            _menu.Items.Add(new ToolStripMenuItem($"Failed to load {Constants.CONFIG_FILE_NAME}!") { Enabled = false });
             _menu.Items.Add("Create", null, (_, _) => CreateProfileConfig());
         }
 
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add("Open Directory", null, (_, _) => OpenDirectory());
         _menu.Items.Add("Copy Default Config", null, (_, _) => CopyDefaultConfig());
-        _menu.Items.Add("Reload", null, (_, _) => LoadProfiles());
+        _menu.Items.Add("Reload", null, (_, _) => Initialize());
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(CreateRunOnStartupMenuItem());
         _menu.Items.Add("Exit", null, (_, _) => { _trayIcon.Visible = false; Application.Exit(); });
@@ -108,10 +128,10 @@ public class DisplayConfTrayContext : ApplicationContext
 
     private void CreateProfileConfig()
     {
-        var json = GetDisplayConfig();
+        var json = GetDisplayConfigJson();
         File.WriteAllText(_configPath, json);
 
-        LoadProfiles();
+        Initialize();
     }
 
     private void OpenDirectory()
@@ -125,79 +145,38 @@ public class DisplayConfTrayContext : ApplicationContext
 
     private void CopyDefaultConfig()
     {
-        var json = GetDisplayConfig();
+        var json = GetDisplayConfigJson();
 
         Clipboard.SetText(json);
         ShowBalloonTip("Config copied to clipboard!");
     }
 
-    private string GetDisplayConfig()
+    private string GetDisplayConfigJson()
+    {
+        var currentProfiles = GetCurrentProfiles();
+        var options = new JsonSerializerOptions { WriteIndented = true };
+        return JsonSerializer.Serialize(currentProfiles, options);
+    }
+
+    private List<DisplayProfile> GetCurrentProfiles()
     {
         var currentProfiles = new List<DisplayProfile>();
         var monitors = DisplayManager.GetMonitors();
-
-        // Screen.AllScreens detects every active monitor connected to the GPU
-        foreach (var screen in Screen.AllScreens)
+        for (var i = 0; i < monitors.Count; i++)
         {
-            DisplayManager.DEVMODE dm = new() { dmSize = (short)Marshal.SizeOf<DisplayManager.DEVMODE>() };
-
-            // We pass screen.DeviceName (e.g., "\\.\DISPLAY2") to get its specific settings
-            if (DisplayManager.EnumDisplaySettings(screen.DeviceName, DisplayManager.ENUM_CURRENT_SETTINGS, ref dm))
+            var (_, monitorId, _) = monitors[i];
+            if (DisplayManager.TryGetDisplayProfile(monitorId, out var profile))
             {
-                // We also need to grab the DPI/Scale for this specific monitor
-                int currentScale = GetCurrentScaleForScreen(screen);
-
-                var monitor = monitors.FirstOrDefault(m => m.DeviceName == screen.DeviceName);
-                if (monitor == default)
-                {
-                    Console.WriteLine($"Monitor not found: {screen.DeviceName}");
-                    continue;
-                }
-
-                currentProfiles.Add(new DisplayProfile
-                {
-                    Name = $"Profile_{screen.DeviceName.Replace(".", "").Replace("\\", "")}",
-                    MonitorId = monitor.MonitorId,
-                    Width = dm.dmPelsWidth,
-                    Height = dm.dmPelsHeight,
-                    RefreshRate = dm.dmDisplayFrequency,
-                    Scale = currentScale
-                });
+                profile.Name = $"Profile {i + 1}";
+                currentProfiles.Add(profile);
             }
         }
 
-        var options = new JsonSerializerOptions { WriteIndented = true };
-        var json = JsonSerializer.Serialize(currentProfiles, options);
-        return json;
-    }
-
-    private int GetCurrentScaleForScreen(Screen screen)
-    {
-        try
-        {
-            // Get the monitor handle from a point within the screen's bounds
-            IntPtr hMonitor = MonitorFromPoint(screen.Bounds.Location, 2); // 2 = MONITOR_DEFAULTTONEAREST
-
-            // 0 = MDT_EFFECTIVE_DPI (The scale the user actually sees)
-            GetDpiForMonitor(hMonitor, 0, out uint dpiX, out uint _);
-
-            // 96 DPI is the baseline for 100%
-            return (int)((dpiX / 96.0) * 100);
-        }
-        catch
-        {
-            return 100; // Fallback if API fails
-        }
+        return currentProfiles;
     }
 
     private void ShowBalloonTip(string text, int timeout = 3000, ToolTipIcon icon = ToolTipIcon.Info)
     {
         _trayIcon.ShowBalloonTip(timeout, "", text, icon);
     }
-
-    [DllImport("shcore.dll")]
-    private static extern int GetDpiForMonitor(IntPtr hmonitor, int dpiType, out uint dpiX, out uint dpiY);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr MonitorFromPoint(Point pt, uint dwFlags);
 }
