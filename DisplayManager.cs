@@ -146,10 +146,12 @@ internal static class DisplayManager
     }
 
     // placeholder – must be pure value types to allow FieldOffset overlap in DISPLAYCONFIG_MODE_INFO
-    [StructLayout(LayoutKind.Sequential, Size = 64)]
+    // Size must match the largest union member (DISPLAYCONFIG_TARGET_MODE = 48 bytes)
+    // so that DISPLAYCONFIG_MODE_INFO total = 16 (header) + 48 (union) = 64 bytes
+    [StructLayout(LayoutKind.Sequential, Size = 48)]
     public struct DISPLAYCONFIG_SOURCE_MODE { }
 
-    [StructLayout(LayoutKind.Sequential, Size = 64)]
+    [StructLayout(LayoutKind.Sequential, Size = 48)]
     public struct DISPLAYCONFIG_DESKTOP_IMAGE_INFO { }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -226,6 +228,14 @@ internal static class DisplayManager
         IntPtr topologyId);
 
     [DllImport("user32.dll")]
+    public static extern int SetDisplayConfig(
+        uint numPathArrayElements,
+        [In] DISPLAYCONFIG_PATH_INFO[] pathArray,
+        uint numModeInfoArrayElements,
+        [In] DISPLAYCONFIG_MODE_INFO[] modeInfoArray,
+        uint flags);
+
+    [DllImport("user32.dll")]
     public static extern int DisplayConfigGetDeviceInfo(
         ref DISPLAYCONFIG_SOURCE_DEVICE_NAME deviceName);
 
@@ -250,6 +260,15 @@ internal static class DisplayManager
     // Flags for QueryDisplayConfig
     public const uint QDC_ALL_PATHS = 0x00000001;
     public const uint QDC_ONLY_ACTIVE_PATHS = 0x00000002;
+
+    // Flags for SetDisplayConfig
+    public const uint SDC_USE_SUPPLIED_DISPLAY_CONFIG = 0x00000020;
+    public const uint SDC_APPLY = 0x00000080;
+    public const uint SDC_SAVE_TO_DATABASE = 0x00000200;
+    public const uint SDC_ALLOW_CHANGES = 0x00000400;
+
+    // Display mode info types
+    public const uint DISPLAYCONFIG_MODE_INFO_TYPE_TARGET = 0x00000002;
 
     // DPI scale device info types (undocumented, stable since Windows 10 1803)
     public const uint DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME = 0x00000001;
@@ -298,6 +317,7 @@ internal static class DisplayManager
             return;
         }
 
+        // Use ChangeDisplaySettingsEx for resolution (it handles mode switching well)
         DEVMODE dm = new() { dmSize = (short)Marshal.SizeOf<DEVMODE>() };
 
         if (EnumDisplaySettings(deviceName, ENUM_CURRENT_SETTINGS, ref dm))
@@ -308,14 +328,16 @@ internal static class DisplayManager
             dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
 
             var result = ChangeDisplaySettingsEx(deviceName, ref dm, IntPtr.Zero, CDS_UPDATEREGISTRY, IntPtr.Zero);
-            if (result != 0) // DISP_CHANGE_SUCCESSFUL is 0
+            if (result != 0)
             {
                 MessageBox.Show($"Failed to change settings. Error code: {result}");
                 return;
             }
-
-            SetScale(deviceName, p.Scale);
         }
+
+        // Use SetDisplayConfig for precise refresh rate (numerator/denominator)
+        SetRefreshRate(deviceName, p.RefreshRate);
+        SetScale(deviceName, p.Scale);
     }
 
     /// <summary>
@@ -344,23 +366,90 @@ internal static class DisplayManager
         return null;
     }
 
-    private static void SetScale(string deviceName, int scalePercent)
+    /// <summary>
+    /// Queries the active display config, finds the path matching the given GDI device name,
+    /// and returns the paths, modes, and matched path index.
+    /// </summary>
+    private static (DISPLAYCONFIG_PATH_INFO[] paths, DISPLAYCONFIG_MODE_INFO[] modes, int pathIndex)
+        FindDisplayConfigPath(string deviceName)
     {
-        var targetIndex = Array.IndexOf(ScalePercentages, scalePercent);
-        if (targetIndex < 0) return;
-
         GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, out uint pathCount, out uint modeCount);
         var paths = new DISPLAYCONFIG_PATH_INFO[pathCount];
         var modes = new DISPLAYCONFIG_MODE_INFO[modeCount];
         QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, ref pathCount, paths, ref modeCount, modes, IntPtr.Zero);
 
-        foreach (var path in paths)
+        for (int i = 0; i < pathCount; i++)
         {
             var sourceName = new DISPLAYCONFIG_SOURCE_DEVICE_NAME();
             sourceName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
             sourceName.header.size = (uint)Marshal.SizeOf<DISPLAYCONFIG_SOURCE_DEVICE_NAME>();
-            sourceName.header.adapterId = path.sourceInfo.adapterId;
-            sourceName.header.id = path.sourceInfo.id;
+            sourceName.header.adapterId = paths[i].sourceInfo.adapterId;
+            sourceName.header.id = paths[i].sourceInfo.id;
+
+            if (DisplayConfigGetDeviceInfo(ref sourceName) != 0) continue;
+            if (sourceName.viewGdiDeviceName == deviceName)
+                return (paths, modes, i);
+        }
+
+        return (paths, modes, -1);
+    }
+
+    /// <summary>
+    /// Sets the precise refresh rate using SetDisplayConfig with numerator/denominator.
+    /// This avoids the rounding issues of ChangeDisplaySettingsEx's integer Hz field.
+    /// </summary>
+    private static void SetRefreshRate(string deviceName, int refreshRate)
+    {
+        var (paths, modes, pathIndex) = FindDisplayConfigPath(deviceName);
+        if (pathIndex < 0) return;
+
+        // Find the target mode for this path
+        var targetModeIdx = paths[pathIndex].targetInfo.modeInfoIdx;
+        if (targetModeIdx >= modes.Length) return;
+
+        // Modify the target mode's vSyncFreq to the exact refresh rate
+        var mode = modes[targetModeIdx];
+        if (mode.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_TARGET)
+        {
+            mode.targetMode.targetVideoSignalInfo.vSyncFreq.Numerator = (uint)refreshRate;
+            mode.targetMode.targetVideoSignalInfo.vSyncFreq.Denominator = 1;
+            modes[targetModeIdx] = mode;
+
+            var result = SetDisplayConfig(
+                (uint)paths.Length, paths,
+                (uint)modes.Length, modes,
+                SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_SAVE_TO_DATABASE | SDC_ALLOW_CHANGES);
+
+            if (result != 0)
+            {
+                // SDC_ALLOW_CHANGES lets Windows adjust slightly if needed,
+                // but if it still fails, log it
+                Console.WriteLine($"SetDisplayConfig for refresh rate failed: {result}");
+            }
+        }
+    }
+
+    private static void SetScale(string deviceName, int scalePercent)
+    {
+        var targetIndex = Array.IndexOf(ScalePercentages, scalePercent);
+        if (targetIndex < 0) return;
+
+        var (_, _, pathIndex) = FindDisplayConfigPath(deviceName);
+        if (pathIndex < 0) return;
+
+        // Re-query to get fresh path info (config may have changed after SetRefreshRate)
+        GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, out uint pathCount, out uint modeCount);
+        var paths = new DISPLAYCONFIG_PATH_INFO[pathCount];
+        var modes = new DISPLAYCONFIG_MODE_INFO[modeCount];
+        QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, ref pathCount, paths, ref modeCount, modes, IntPtr.Zero);
+
+        for (int i = 0; i < pathCount; i++)
+        {
+            var sourceName = new DISPLAYCONFIG_SOURCE_DEVICE_NAME();
+            sourceName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            sourceName.header.size = (uint)Marshal.SizeOf<DISPLAYCONFIG_SOURCE_DEVICE_NAME>();
+            sourceName.header.adapterId = paths[i].sourceInfo.adapterId;
+            sourceName.header.id = paths[i].sourceInfo.id;
 
             if (DisplayConfigGetDeviceInfo(ref sourceName) != 0) continue;
             if (sourceName.viewGdiDeviceName != deviceName) continue;
@@ -369,8 +458,8 @@ internal static class DisplayManager
             var getDpi = new DISPLAYCONFIG_GET_DPI_SCALE();
             getDpi.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_DPI_SCALE;
             getDpi.header.size = (uint)Marshal.SizeOf<DISPLAYCONFIG_GET_DPI_SCALE>();
-            getDpi.header.adapterId = path.sourceInfo.adapterId;
-            getDpi.header.id = path.sourceInfo.id;
+            getDpi.header.adapterId = paths[i].sourceInfo.adapterId;
+            getDpi.header.id = paths[i].sourceInfo.id;
 
             if (DisplayConfigGetDeviceInfo(ref getDpi) != 0) return;
 
@@ -386,8 +475,8 @@ internal static class DisplayManager
             var setDpi = new DISPLAYCONFIG_SET_DPI_SCALE();
             setDpi.header.type = DISPLAYCONFIG_DEVICE_INFO_SET_DPI_SCALE;
             setDpi.header.size = (uint)Marshal.SizeOf<DISPLAYCONFIG_SET_DPI_SCALE>();
-            setDpi.header.adapterId = path.sourceInfo.adapterId;
-            setDpi.header.id = path.sourceInfo.id;
+            setDpi.header.adapterId = paths[i].sourceInfo.adapterId;
+            setDpi.header.id = paths[i].sourceInfo.id;
             setDpi.scaleSteps = relativeSteps;
 
             DisplayConfigSetDeviceInfo(ref setDpi);
