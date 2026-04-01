@@ -120,7 +120,7 @@ public class DisplayConfTrayContext : ApplicationContext
 
     private void Initialize()
     {
-        _profiles = LoadProfilesFromFile() ?? _profiles;
+        _profiles = LoadProfilesFromFile() ?? [];
         InitializeMenuItems(_profiles);
     }
 
