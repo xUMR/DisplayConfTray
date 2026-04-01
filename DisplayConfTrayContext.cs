@@ -9,6 +9,9 @@ public class DisplayConfTrayContext : ApplicationContext
     private readonly RegistryUtility _registry = new();
     private readonly ContextMenuStrip _menu = new();
     private readonly string _configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Constants.CONFIG_FILE_NAME);
+    private readonly HotkeyWindow _hotkeyWindow = new();
+    private readonly Dictionary<string, List<DisplayProfile>> _hotkeyToProfileList = new();
+    private List<DisplayProfile> _profiles = new();
 
     public DisplayConfTrayContext(bool isSilent, int delay)
     {
@@ -32,7 +35,7 @@ public class DisplayConfTrayContext : ApplicationContext
             Visible = true
         };
 
-        Initialize();
+        _menu.Opening += (_, _) => InitializeMenuItems(_profiles);
 
         if (isSilent)
         {
@@ -40,7 +43,71 @@ public class DisplayConfTrayContext : ApplicationContext
         }
         else
         {
+            Initialize();
             ShowBalloonTip("DisplayConfTray is running in the background.");
+        }
+    }
+
+    private void SetupHotkeys(List<DisplayProfile> profiles)
+    {
+        _hotkeyWindow.HotkeyPressed -= OnHotkeyPressed;
+        _hotkeyWindow.HotkeyPressed += OnHotkeyPressed;
+
+        _hotkeyWindow.Clear();
+        _hotkeyToProfileList.Clear();
+
+        foreach (var profile in profiles)
+        {
+            var hotkey = profile.Hotkey;
+            if (string.IsNullOrWhiteSpace(hotkey)) continue;
+
+            var prettyHotkey = HotkeyWindow.ToPrettyString(hotkey);
+            _hotkeyWindow.Register(prettyHotkey);
+
+            if (!_hotkeyToProfileList.TryGetValue(prettyHotkey, out var value))
+            {
+                value = [];
+                _hotkeyToProfileList[prettyHotkey] = value;
+            }
+
+            value.Add(profile);
+        }
+    }
+
+    private void OnHotkeyPressed(string hotkey)
+    {
+        var prettyHotkey = HotkeyWindow.ToPrettyString(hotkey);
+        if (!_hotkeyToProfileList.TryGetValue(prettyHotkey, out var profiles) || profiles.Count == 0)
+            return;
+
+        var currentProfiles = DisplayManager.GetCurrentProfiles();
+        if (profiles.Count > 1)
+        {
+            var nextIndex = 0;
+            foreach (var profile in currentProfiles)
+            {
+                var activeProfileIndex = profiles.FindIndex(p => profile.Matches(p));
+                if (activeProfileIndex > -1)
+                {
+                    nextIndex = (activeProfileIndex + 1) % profiles.Count;
+                    break;
+                }
+            }
+
+            var nextProfile = profiles[nextIndex];
+            DisplayManager.Apply(nextProfile);
+        }
+        else
+        {
+            var nextProfile = profiles[0];
+            var isAlreadyActive = currentProfiles.Any(p => p.Matches(nextProfile));
+            if (isAlreadyActive)
+            {
+                ShowBalloonTip($"{nextProfile.Name} is already active.");
+                return;
+            }
+
+            DisplayManager.Apply(nextProfile);
         }
     }
 
@@ -53,8 +120,8 @@ public class DisplayConfTrayContext : ApplicationContext
 
     private void Initialize()
     {
-        var profiles = LoadProfilesFromFile();
-        InitializeMenuItems(profiles);
+        _profiles = LoadProfilesFromFile() ?? _profiles;
+        InitializeMenuItems(_profiles);
     }
 
     private List<DisplayProfile>? LoadProfilesFromFile()
@@ -66,6 +133,12 @@ public class DisplayConfTrayContext : ApplicationContext
             {
                 var json = File.ReadAllText(_configPath);
                 var profiles = JsonSerializer.Deserialize<List<DisplayProfile>>(json);
+                if (profiles == null) return null;
+
+                if (profiles.DistinctBy(p => p.Name).Count() != profiles.Count)
+                {
+                    throw new Exception("Duplicate profile names found!");
+                }
 
                 return profiles;
             }
@@ -81,10 +154,13 @@ public class DisplayConfTrayContext : ApplicationContext
     private void InitializeMenuItems(List<DisplayProfile>? profiles)
     {
         _menu.Items.Clear();
+        _hotkeyWindow.Clear();
 
         if (profiles != null && profiles.Count > 0)
         {
-            var currentProfiles = GetCurrentProfiles();
+            SetupHotkeys(profiles);
+
+            var currentProfiles = DisplayManager.GetCurrentProfiles();
             var activeIcon = GraphicsExtensions.CreateCircleImage(16, _menu.ForeColor);
 
             foreach (var profile in profiles)
@@ -95,6 +171,9 @@ public class DisplayConfTrayContext : ApplicationContext
                     DisplayManager.Apply(profile);
                     InitializeMenuItems(profiles);
                 });
+
+                item.ShortcutKeyDisplayString = HotkeyWindow.ToPrettyString(profile.Hotkey);
+
                 _menu.Items.Add(item);
             }
         }
@@ -107,7 +186,7 @@ public class DisplayConfTrayContext : ApplicationContext
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add("Open Directory", null, (_, _) => OpenDirectory());
         _menu.Items.Add("Copy Default Config", null, (_, _) => CopyDefaultConfig());
-        _menu.Items.Add("Reload", null, (_, _) => Initialize());
+        _menu.Items.Add("Reload Config", null, (_, _) => Initialize());
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(CreateRunOnStartupMenuItem());
         _menu.Items.Add("Exit", null, (_, _) => { _trayIcon.Visible = false; Application.Exit(); });
@@ -153,26 +232,9 @@ public class DisplayConfTrayContext : ApplicationContext
 
     private string GetDisplayConfigJson()
     {
-        var currentProfiles = GetCurrentProfiles();
+        var currentProfiles = DisplayManager.GetCurrentProfiles();
         var options = new JsonSerializerOptions { WriteIndented = true };
         return JsonSerializer.Serialize(currentProfiles, options);
-    }
-
-    private List<DisplayProfile> GetCurrentProfiles()
-    {
-        var currentProfiles = new List<DisplayProfile>();
-        var monitors = DisplayManager.GetMonitors();
-        for (var i = 0; i < monitors.Count; i++)
-        {
-            var (_, monitorId, _) = monitors[i];
-            if (DisplayManager.TryGetDisplayProfile(monitorId, out var profile))
-            {
-                profile.Name = $"Profile {i + 1}";
-                currentProfiles.Add(profile);
-            }
-        }
-
-        return currentProfiles;
     }
 
     private void ShowBalloonTip(string text, int timeout = 3000, ToolTipIcon icon = ToolTipIcon.Info)

@@ -25,6 +25,23 @@ public class DarkModeRenderer() : ToolStripProfessionalRenderer(new DarkModeColo
         };
         g.DrawLines(pen, points);
     }
+
+    protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+    {
+        // If this is the hotkey text, draw it dimmer + italic
+        if (e.TextDirection == ToolStripTextDirection.Horizontal
+            && e.Item is ToolStripMenuItem menuItem
+            && !string.IsNullOrEmpty(menuItem.ShortcutKeyDisplayString)
+            && e.Text == menuItem.ShortcutKeyDisplayString
+            && e.TextFont != null)
+        {
+            using var font = new Font(e.TextFont, FontStyle.Italic);
+            e.TextColor = Color.FromArgb(120, 120, 120);
+            e.TextFont = font;
+        }
+
+        base.OnRenderItemText(e);
+    }
 }
 
 public class DarkModeColorTable : ProfessionalColorTable

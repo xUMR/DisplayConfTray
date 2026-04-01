@@ -8,6 +8,7 @@ public class DisplayProfile
     public int Height { get; set; } = 1080;
     public int RefreshRate { get; set; } = Constants.DEFAULT_REFRESH_RATE;
     public int Scale { get; set; } = Constants.DEFAULT_SCALE;
+    public string Hotkey { get; set; } = "";
 
     public bool Matches(DisplayProfile other)
     {

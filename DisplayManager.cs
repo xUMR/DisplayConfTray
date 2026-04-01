@@ -484,6 +484,23 @@ internal static class DisplayManager
         }
     }
 
+    public static List<DisplayProfile> GetCurrentProfiles()
+    {
+        var currentProfiles = new List<DisplayProfile>();
+        var monitors = GetMonitors();
+        for (var i = 0; i < monitors.Count; i++)
+        {
+            var (_, monitorId, _) = monitors[i];
+            if (TryGetDisplayProfile(monitorId, out var profile))
+            {
+                profile.Name = $"Profile {i + 1}";
+                currentProfiles.Add(profile);
+            }
+        }
+
+        return currentProfiles;
+    }
+
     public static bool TryGetDisplayProfile(string monitorId, out DisplayProfile profile)
     {
         profile = new DisplayProfile { MonitorId = monitorId };
