@@ -1,17 +1,26 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Text.Json;
 
 namespace DisplayConfTray;
 
 public class DisplayConfTrayContext : ApplicationContext
 {
+    private static readonly MethodInfo? ShowContextMenuMethod =
+        typeof(NotifyIcon).GetMethod("ShowContextMenu",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+
     private readonly NotifyIcon _trayIcon;
     private readonly RegistryUtility _registry = new();
     private readonly ContextMenuStrip _menu = new();
-    private readonly string _configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Constants.CONFIG_FILE_NAME);
+    private readonly string _configPath =
+        Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Constants.CONFIG_FILE_NAME);
+
     private readonly HotkeyWindow _hotkeyWindow = new();
     private readonly Dictionary<string, List<DisplayProfile>> _hotkeyToProfileList = new();
     private List<DisplayProfile> _profiles = new();
+    private readonly Icon _baseIcon;
+    private Icon? _tempIcon;
 
     public DisplayConfTrayContext(bool isSilent, int delay)
     {
@@ -27,15 +36,21 @@ public class DisplayConfTrayContext : ApplicationContext
             _menu.Padding = new Padding(2);
         }
 
+        _baseIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath)!;
         _trayIcon = new NotifyIcon
         {
-            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath),
+            Icon = _baseIcon,
             ContextMenuStrip = _menu,
-            Text = Constants.APP_NAME,
+            Text = Application.ProductName,
             Visible = true
         };
 
         _menu.Opening += (_, _) => InitializeMenuItems(_profiles);
+        _trayIcon.MouseUp += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left)
+                ShowContextMenuMethod?.Invoke(_trayIcon, null);
+        };
 
         if (isSilent)
         {
@@ -56,13 +71,18 @@ public class DisplayConfTrayContext : ApplicationContext
         _hotkeyWindow.Clear();
         _hotkeyToProfileList.Clear();
 
+        HashSet<string>? failedHotkeys = null;
         foreach (var profile in profiles)
         {
             var hotkey = profile.Hotkey;
             if (string.IsNullOrWhiteSpace(hotkey)) continue;
 
             var prettyHotkey = HotkeyWindow.ToPrettyString(hotkey);
-            _hotkeyWindow.Register(prettyHotkey);
+            if (!_hotkeyWindow.Register(prettyHotkey))
+            {
+                failedHotkeys ??= [];
+                failedHotkeys.Add(prettyHotkey);
+            }
 
             if (!_hotkeyToProfileList.TryGetValue(prettyHotkey, out var value))
             {
@@ -72,6 +92,13 @@ public class DisplayConfTrayContext : ApplicationContext
 
             value.Add(profile);
         }
+
+        if (failedHotkeys == null) return;
+
+        foreach (var hotkey in failedHotkeys)
+        {
+            MessageBox.Show($"Failed to register hotkey: {hotkey}");
+        }
     }
 
     private void OnHotkeyPressed(string hotkey)
@@ -80,6 +107,7 @@ public class DisplayConfTrayContext : ApplicationContext
         if (!_hotkeyToProfileList.TryGetValue(prettyHotkey, out var profiles) || profiles.Count == 0)
             return;
 
+        DisplayProfile nextProfile;
         var currentProfiles = DisplayManager.GetCurrentProfiles();
         if (profiles.Count > 1)
         {
@@ -94,21 +122,20 @@ public class DisplayConfTrayContext : ApplicationContext
                 }
             }
 
-            var nextProfile = profiles[nextIndex];
-            DisplayManager.Apply(nextProfile);
+            nextProfile = profiles[nextIndex];
         }
         else
         {
-            var nextProfile = profiles[0];
+            nextProfile = profiles[0];
             var isAlreadyActive = currentProfiles.Any(p => p.Matches(nextProfile));
             if (isAlreadyActive)
             {
                 ShowBalloonTip($"{nextProfile.Name} is already active.");
                 return;
             }
-
-            DisplayManager.Apply(nextProfile);
         }
+
+        ApplyProfileThenUpdateMenuItems(nextProfile, _profiles);
     }
 
     private async Task InitializeAsync(int delay)
@@ -144,7 +171,7 @@ public class DisplayConfTrayContext : ApplicationContext
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error loading profiles: {ex.Message}");
+                MessageBox.Show($"Error loading profiles: {ex.Message}", Application.ProductName);
             }
         }
 
@@ -156,6 +183,25 @@ public class DisplayConfTrayContext : ApplicationContext
         _menu.Items.Clear();
         _hotkeyWindow.Clear();
 
+        var profileConfigMenuItems = CreateProfileConfigMenuItems(profiles);
+        foreach (var menuItem in profileConfigMenuItems) { _menu.Items.Add(menuItem); }
+
+        _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add("Open Directory", null, (_, _) => OpenDirectory());
+        _menu.Items.Add("Copy Default Config", null, (_, _) => CopyDefaultConfig());
+        _menu.Items.Add("Reload Config", null, (_, _) => Initialize());
+        _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add(CreateRunOnStartupMenuItem());
+        _menu.Items.Add("About", null, (_, _) => ShowAboutMessage());
+        _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add("Exit", null, (_, _) => { Dispose(); Application.Exit(); });
+
+        UpdateTrayIcon(profileConfigMenuItems);
+    }
+
+    private List<ToolStripMenuItem> CreateProfileConfigMenuItems(List<DisplayProfile>? profiles)
+    {
+        var menuItems = new List<ToolStripMenuItem>();
         if (profiles != null && profiles.Count > 0)
         {
             SetupHotkeys(profiles);
@@ -168,28 +214,27 @@ public class DisplayConfTrayContext : ApplicationContext
                 var isActive = currentProfiles.Any(p => profile.Matches(p));
                 var item = new ToolStripMenuItem(profile.Name, isActive ? activeIcon : null, (_, _) =>
                 {
-                    DisplayManager.Apply(profile);
-                    InitializeMenuItems(profiles);
+                    ApplyProfileThenUpdateMenuItems(profile, profiles);
                 });
 
                 item.ShortcutKeyDisplayString = HotkeyWindow.ToPrettyString(profile.Hotkey);
 
-                _menu.Items.Add(item);
+                menuItems.Add(item);
             }
         }
         else
         {
-            _menu.Items.Add(new ToolStripMenuItem($"Failed to load {Constants.CONFIG_FILE_NAME}!") { Enabled = false });
-            _menu.Items.Add("Create", null, (_, _) => CreateProfileConfig());
+            menuItems.Add(new ToolStripMenuItem($"Failed to load {Constants.CONFIG_FILE_NAME}!") { Enabled = false });
+            menuItems.Add(new ToolStripMenuItem("Create Config", null, (_, _) => CreateProfileConfig()));
         }
 
-        _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add("Open Directory", null, (_, _) => OpenDirectory());
-        _menu.Items.Add("Copy Default Config", null, (_, _) => CopyDefaultConfig());
-        _menu.Items.Add("Reload Config", null, (_, _) => Initialize());
-        _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add(CreateRunOnStartupMenuItem());
-        _menu.Items.Add("Exit", null, (_, _) => { _trayIcon.Visible = false; Application.Exit(); });
+        return menuItems;
+    }
+
+    private void ApplyProfileThenUpdateMenuItems(DisplayProfile profile, List<DisplayProfile>? profiles)
+    {
+        DisplayManager.Apply(profile);
+        InitializeMenuItems(profiles);
     }
 
     private ToolStripMenuItem CreateRunOnStartupMenuItem()
@@ -237,8 +282,100 @@ public class DisplayConfTrayContext : ApplicationContext
         return JsonSerializer.Serialize(currentProfiles, options);
     }
 
+    private void UpdateTrayIcon(List<ToolStripMenuItem> menuItems)
+    {
+        var activeCount = 0;
+        var activeItemIndex = -1;
+        for (var i = 0; i < menuItems.Count; i++)
+        {
+            var menuItem = menuItems[i];
+            if (menuItem.Image != null)
+            {
+                activeCount++;
+                activeItemIndex = i;
+            }
+        }
+
+        string iconText;
+        string tooltipText;
+        switch (activeCount)
+        {
+            case 0:
+                iconText = "";
+                tooltipText = Application.ProductName ?? Constants.APP_NAME;
+                break;
+            case 1:
+                iconText = _profiles[activeItemIndex].IconText;
+                tooltipText = $"{Application.ProductName}: {menuItems[activeItemIndex].Text}";
+                break;
+            default:
+                iconText = "*";
+                tooltipText = $"{Application.ProductName} (*)";
+                break;
+        }
+
+        UpdateTrayIconText(iconText);
+        _trayIcon.Text = tooltipText;
+    }
+
+    private void UpdateTrayIconText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            _trayIcon.Icon = _baseIcon;
+            return;
+        }
+
+        using var baseBitmap = new Bitmap(_baseIcon.ToBitmap());
+        using var graphics = Graphics.FromImage(baseBitmap);
+
+        using var brush = new SolidBrush(_menu.ForeColor);
+        using var font = new Font("Consolas", 18, FontStyle.Bold);
+
+        graphics.DrawString(text, font, brush, new PointF(6, -1));
+
+        var oldIcon = _tempIcon;
+
+        var hIcon = baseBitmap.GetHicon();
+        _tempIcon = Icon.FromHandle(hIcon);
+
+        _trayIcon.Icon = _tempIcon;
+
+        // destroy the old GDI handle to prevent memory leaks
+        if (oldIcon != null)
+        {
+            DestroyIcon(oldIcon.Handle);
+            oldIcon.Dispose();
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+    private static extern bool DestroyIcon(IntPtr handle);
+
     private void ShowBalloonTip(string text, int timeout = 3000, ToolTipIcon icon = ToolTipIcon.Info)
     {
         _trayIcon.ShowBalloonTip(timeout, "", text, icon);
+    }
+
+    private void ShowAboutMessage()
+    {
+        MessageBox.Show(
+            $"{Application.ProductName} v{Application.ProductVersion}\n" + Constants.ABOUT_TEXT,
+            "About",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (_tempIcon != null)
+        {
+            DestroyIcon(_tempIcon.Handle);
+            _tempIcon.Dispose();
+        }
+
+        _trayIcon.Dispose();
+
+        base.Dispose(disposing);
     }
 }

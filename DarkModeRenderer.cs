@@ -16,7 +16,7 @@ public class DarkModeRenderer() : ToolStripProfessionalRenderer(new DarkModeColo
         g.FillRoundedRectangle(brush, rect, 3); // Helper for rounded corners
 
         // Draw the white checkmark tick
-        using var pen = new Pen(Color.White, 2);
+        using var pen = new Pen(e.Item.ForeColor, 2);
         var points = new Point[]
         {
             new Point(rect.Left + 3, rect.Top + 6),

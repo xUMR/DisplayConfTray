@@ -5,40 +5,44 @@ A system tray utility for switching between display profiles:
 - Refresh rate
 - Scale
 
+![screenshot.png](screenshot.png)
+
 ---
 ## Requirements
 
-.NET 10 is required. Use either method:
-- [Download .NET 10](https://dotnet.microsoft.com/en-us/download/dotnet/10.0)
-- Winget: `winget install -e --id Microsoft.DotNet.DesktopRuntime.10`
+.NET 10 is required. Use either installation method:
+- Download .NET 10 from [here](https://dotnet.microsoft.com/en-us/download/dotnet/10.0).
+- WinGet: `winget install -e --id Microsoft.DotNet.DesktopRuntime.10`.
 
 ---
+## Usage
 
-Example config (`config.json`):
+- Download the latest release from [here](https://github.com/xUMR/DisplayConfTray/releases).
+- Run the executable.
+- Use the **Create Config** option to generate an initial `config.json` file, populated with the correct monitor IDs.
+- Assigning the same hotkey to multiple display profiles will allow cycling through them.
+- When duplicating displays, the refresh rate may require correction.
+
+### Example config (`config.json`):
 ```json
 [
   {
     "Name": "Default (4K)",
+    "IconText": "4",
     "MonitorId": "MONITOR\\XXXXXXX",
-    "Width": 3840,
-    "Height": 2160,
+    "Resolution": "3840x2160",
     "RefreshRate": 120,
     "Scale": 150,
-    "Hotkey": "Ctrl+Shift+1"
+    "Hotkey": "Ctrl+Shift+Alt+1"
   },
   {
-    "Name": "Game (2K)",
+    "Name": "Gaming (2K)",
+    "IconText": "G",
     "MonitorId": "MONITOR\\XXXXXXX",
-    "Width": 2560,
-    "Height": 1440,
+    "Resolution": "2560x1440",
     "RefreshRate": 240,
     "Scale": 100,
-    "Hotkey": "Ctrl+Shift+2"
+    "Hotkey": "Ctrl+Shift+Alt+2"
   }
 ]
 ```
-- You can use the same hotkey to cycle between profiles.  
-
----
-
-The icon is from [Lucide](https://lucide.dev/icons/monitor-cog).
