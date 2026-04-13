@@ -11,7 +11,6 @@ public class DisplayConfTrayContext : ApplicationContext
             BindingFlags.Instance | BindingFlags.NonPublic);
 
     private readonly NotifyIcon _trayIcon;
-    private readonly RegistryUtility _registry = new();
     private readonly ContextMenuStrip _menu = new();
     private readonly string _configPath =
         Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Constants.CONFIG_FILE_NAME);
@@ -24,7 +23,7 @@ public class DisplayConfTrayContext : ApplicationContext
 
     public DisplayConfTrayContext(bool isSilent, int delay)
     {
-        if (_registry.IsDarkMode)
+        if (RegistryUtility.IsDarkMode)
         {
             _menu.Renderer = new DarkModeRenderer();
             _menu.ForeColor = Color.White;
@@ -97,7 +96,7 @@ public class DisplayConfTrayContext : ApplicationContext
 
         foreach (var hotkey in failedHotkeys)
         {
-            MessageBox.Show($"Failed to register hotkey: {hotkey}");
+            AppDialog.Show($"Failed to register hotkey: {hotkey}", icon: MessageBoxIcon.Error);
         }
     }
 
@@ -171,7 +170,7 @@ public class DisplayConfTrayContext : ApplicationContext
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error loading profiles: {ex.Message}", Application.ProductName);
+                AppDialog.Show($"Error loading profiles: {ex.Message}", icon: MessageBoxIcon.Error);
             }
         }
 
@@ -242,10 +241,10 @@ public class DisplayConfTrayContext : ApplicationContext
         var menuItem = new ToolStripMenuItem("Run at Startup")
         {
             CheckOnClick = true,
-            Checked = _registry.RunOnStartup
+            Checked = RegistryUtility.RunOnStartup
         };
 
-        menuItem.Click += (_, _) => _registry.RunOnStartup = menuItem.Checked;
+        menuItem.Click += (_, _) => RegistryUtility.RunOnStartup = menuItem.Checked;
 
         return menuItem;
     }
@@ -359,11 +358,9 @@ public class DisplayConfTrayContext : ApplicationContext
 
     private void ShowAboutMessage()
     {
-        MessageBox.Show(
+        AppDialog.Show(
             $"{Application.ProductName} v{Application.ProductVersion}\n" + Constants.ABOUT_TEXT,
-            "About",
-            MessageBoxButtons.OK,
-            MessageBoxIcon.Information);
+            "About");
     }
 
     protected override void Dispose(bool disposing)

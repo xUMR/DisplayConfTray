@@ -313,7 +313,7 @@ internal static class DisplayManager
         var deviceName = ResolveDeviceName(p.MonitorId);
         if (deviceName == null)
         {
-            MessageBox.Show($"Monitor '{p.MonitorId}' not found. Is it connected?");
+            AppDialog.Show($"Monitor '{p.MonitorId}' not found. Is it connected?");
             return;
         }
 
@@ -330,7 +330,7 @@ internal static class DisplayManager
             var result = ChangeDisplaySettingsEx(deviceName, ref dm, IntPtr.Zero, CDS_UPDATEREGISTRY, IntPtr.Zero);
             if (result != 0)
             {
-                MessageBox.Show($"Failed to change settings. Error code: {result}");
+                AppDialog.Show($"Failed to change settings. Error code: {result}");
                 return;
             }
         }

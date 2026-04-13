@@ -2,11 +2,11 @@ using Microsoft.Win32;
 
 namespace DisplayConfTray;
 
-public class RegistryUtility
+public static class RegistryUtility
 {
     private const string RUN_KEY = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
 
-    public bool RunOnStartup
+    public static bool RunOnStartup
     {
         get
         {
@@ -28,22 +28,8 @@ public class RegistryUtility
         }
     }
 
-    public bool IsDarkMode
-    {
-        get
-        {
-            const string registryKey = @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
-            const string valueName = "AppsUseLightTheme";
-
-            // If the value is 0, it's Dark Mode. If it's 1 (or missing), it's Light Mode.
-            object? registryValue = Registry.GetValue(registryKey, valueName, null);
-
-            if (registryValue is int i)
-            {
-                return i == 0;
-            }
-
-            return false; // Default to light if we can't find it
-        }
-    }
+    public static readonly bool IsDarkMode =
+        Registry.GetValue(
+            @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            "AppsUseLightTheme", null) is 0;
 }
